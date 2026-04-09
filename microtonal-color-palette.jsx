@@ -1,0 +1,336 @@
+import { useState, useMemo, useCallback, useRef } from "react";
+
+// ============ SCALE LIBRARY ============
+const SCALES = {
+  "5-EDO": { type: "edo", n: 5, desc: "Pentatonic equal division" },
+  "7-EDO": { type: "edo", n: 7, desc: "Equal heptatonic" },
+  "12-EDO": { type: "edo", n: 12, desc: "Standard Western tuning" },
+  "19-EDO": { type: "edo", n: 19, desc: "Third-comma meantone approx." },
+  "22-EDO": { type: "edo", n: 22, desc: "Superpyth / Porcupine" },
+  "24-EDO": { type: "edo", n: 24, desc: "Quarter-tone" },
+  "31-EDO": { type: "edo", n: 31, desc: "Quarter-comma meantone" },
+  "41-EDO": { type: "edo", n: 41, desc: "Schismatic temperament" },
+  "53-EDO": { type: "edo", n: 53, desc: "Mercator / Turkish approx." },
+  "72-EDO": { type: "edo", n: 72, desc: "Ekmelic / Sims system" },
+  "JI Major": { type: "cents", cents: [0,203.91,386.31,498.04,701.96,884.36,1088.27], names: ["C","D","E","F","G","A","B"], desc: "5-limit just major" },
+  "JI Minor": { type: "cents", cents: [0,203.91,315.64,498.04,701.96,813.69,1017.60], names: ["C","D","Eb","F","G","Ab","Bb"], desc: "5-limit just minor" },
+  "Pythagorean": { type: "cents", cents: [0,203.91,407.82,498.04,701.96,905.87,1109.78], names: ["C","D","E","F","G","A","B"], desc: "3-limit Pythagorean" },
+  "Dorian": { type: "cents", cents: [0,200,300,500,700,900,1000], names: ["D","E","F","G","A","B","C"], desc: "12-EDO Dorian" },
+  "Lydian": { type: "cents", cents: [0,200,400,600,700,900,1100], names: ["F","G","A","B","C","D","E"], desc: "12-EDO Lydian" },
+  "Mixolydian": { type: "cents", cents: [0,200,400,500,700,900,1000], names: ["G","A","B","C","D","E","F"], desc: "12-EDO Mixolydian" },
+  "Phrygian": { type: "cents", cents: [0,100,300,500,700,800,1000], names: ["E","F","G","A","B","C","D"], desc: "12-EDO Phrygian" },
+  "Maqam Rast": { type: "cents", cents: [0,200,350,500,700,900,1050], names: ["C","D","E-50","F","G","A","B-50"], desc: "Arabic Rast" },
+  "Maqam Hijaz": { type: "cents", cents: [0,100,400,500,700,800,1100], names: ["D","Eb","F#","G","A","Bb","C#"], desc: "Arabic Hijaz" },
+  "Maqam Bayati": { type: "cents", cents: [0,150,300,500,700,850,1000], names: ["D","E-50","F","G","A","B-50","C"], desc: "Arabic Bayati" },
+  "Slendro": { type: "cents", cents: [0,240,480,720,960], names: ["1","2","3","5","6"], desc: "Javanese Slendro" },
+  "Pelog": { type: "cents", cents: [0,120,270,540,670,780,1050], names: ["1","2","3","4","5","6","7"], desc: "Javanese Pelog" },
+  "Harmonic 8-16": { type: "cents", cents: [0,204.0,386.3,551.3,702.0,840.5,968.8,1088.3], names: ["8","9","10","11","12","13","14","15"], desc: "Harmonics 8-15" },
+};
+
+const DIATONIC_BASES = {
+  "Ionian":     { cents: [0,200,400,500,700,900,1100], names: ["C","D","E","F","G","A","B"] },
+  "Dorian":     { cents: [0,200,300,500,700,900,1000], names: ["D","E","F","G","A","B","C"] },
+  "Phrygian":   { cents: [0,100,300,500,700,800,1000], names: ["E","F","G","A","B","C","D"] },
+  "Lydian":     { cents: [0,200,400,600,700,900,1100], names: ["F","G","A","B","C","D","E"] },
+  "Mixolydian": { cents: [0,200,400,500,700,900,1000], names: ["G","A","B","C","D","E","F"] },
+  "Aeolian":    { cents: [0,200,300,500,700,800,1000], names: ["A","B","C","D","E","F","G"] },
+  "Locrian":    { cents: [0,100,300,500,600,800,1000], names: ["B","C","D","E","F","G","A"] },
+  "Rast":       { cents: [0,200,350,500,700,900,1050], names: ["C","D","E\u00BDb","F","G","A","B\u00BDb"] },
+};
+
+// ============ COLOR MATH ============
+function hslToHex(h,s,l) {
+  h=((h%360)+360)%360; const s1=s/100,l1=l/100,c=(1-Math.abs(2*l1-1))*s1,x=c*(1-Math.abs((h/60%2)-1)),m=l1-c/2;
+  let r,g,b; if(h<60)[r,g,b]=[c,x,0];else if(h<120)[r,g,b]=[x,c,0];else if(h<180)[r,g,b]=[0,c,x];
+  else if(h<240)[r,g,b]=[0,x,c];else if(h<300)[r,g,b]=[x,0,c];else[r,g,b]=[c,0,x];
+  const t=v=>Math.round((v+m)*255).toString(16).padStart(2,"0"); return`#${t(r)}${t(g)}${t(b)}`;
+}
+function lumOf(hex){const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);return .299*r+.587*g+.114*b;}
+function hexToRgb(hex){return{r:parseInt(hex.slice(1,3),16),g:parseInt(hex.slice(3,5),16),b:parseInt(hex.slice(5,7),16)};}
+function centsToHue(c,base=0){return(base+(c/1200)*360)%360;}
+
+// ============ I(D,N) GENERATOR ============
+function generateIcefaceScale(dKey, N) {
+  const dia = DIATONIC_BASES[dKey]; if(!dia) return {cents:[],names:[],isDia:[]};
+  const diaSet = new Set(dia.cents); const noteN=["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+  const all=[];
+  for(let i=0;i<12;i++){const sc=i*100;
+    if(diaSet.has(sc)){const idx=dia.cents.indexOf(sc);all.push({cents:sc,name:dia.names[idx],isDia:true});}
+    else{let upper=null;for(let j=1;j<=12;j++){const cand=((i+j)%12)*100;if(diaSet.has(cand)){upper=cand===0?1200:cand;break;}}
+      all.push({cents:upper!==null?upper-N:sc,name:`${noteN[i]}*`,isDia:false});}}
+  all.sort((a,b)=>a.cents-b.cents);
+  return{cents:all.map(a=>a.cents),names:all.map(a=>a.name),isDia:all.map(a=>a.isDia)};
+}
+
+// ============ PARSERS ============
+function parseScl(text){
+  const ls=text.split(/\r?\n/).filter(l=>!l.startsWith("!"));if(ls.length<3)return null;
+  const desc=ls[0].trim(),count=parseInt(ls[1].trim());if(isNaN(count))return null;
+  const cents=[0],names=["1/1"];
+  for(let i=2;i<2+count&&i<ls.length;i++){const v=ls[i].trim();if(!v)continue;
+    if(v.includes("/")){ const[n,d]=v.split("/").map(Number);if(d>0)cents.push(1200*Math.log2(n/d));}
+    else cents.push(parseFloat(v)); names.push(v.split(/\s/)[0]);}
+  if(cents.length>1&&cents[cents.length-1]>=1199){cents.pop();names.pop();}
+  return{desc,cents,names};}
+function parseCentsText(text){
+  const vs=text.split(/[\s,;]+/).map(s=>s.trim()).filter(s=>s&&!isNaN(+s)).map(Number);
+  if(!vs.length)return null;const cents=vs[0]===0?vs:[0,...vs];return{desc:"Custom",cents,names:cents.map((_,i)=>`${i+1}`)};}
+function generateScl(name,cents){
+  return[`! ${name.replace(/\s+/g,"_")}.scl`,`!`,name,`${cents.length-1}`,`!`,...cents.slice(1).map(c=>` ${c.toFixed(6)}`),` 1200.000000`].join("\n");}
+
+// ============ COMPONENTS ============
+function ColorWheel({notes,size=260,baseHue}){
+  const cx=size/2,cy=size/2,r=size/2-30,ri=size/2-70;
+  return(<svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+    {Array.from({length:72},(_,i)=>{const deg=i*5,a1=(deg-2.5)*Math.PI/180,a2=(deg+2.5)*Math.PI/180,ro=size/2-8;
+      return<path key={i} d={`M${cx+(r+14)*Math.cos(a1)},${cy+(r+14)*Math.sin(a1)} A${ro},${ro} 0 0,1 ${cx+(r+14)*Math.cos(a2)},${cy+(r+14)*Math.sin(a2)} L${cx+r*Math.cos(a2)},${cy+r*Math.sin(a2)} A${r},${r} 0 0,0 ${cx+r*Math.cos(a1)},${cy+r*Math.sin(a1)} Z`} fill={hslToHex(deg,50,75)} opacity={.35}/>;
+    })}
+    <circle cx={cx} cy={cy} r={ri-4} fill="#1a1a2e"/>
+    <text x={cx} y={cy-2} textAnchor="middle" fill="#888" fontSize={11}>{notes.length} tones</text>
+    <text x={cx} y={cy+12} textAnchor="middle" fill="#555" fontSize={9}>base:{baseHue}°</text>
+    {notes.map((n,i)=>{const a=(n.hue-90)*Math.PI/180,nx=cx+(r-18)*Math.cos(a),ny=cy+(r-18)*Math.sin(a);
+      return(<g key={i}>
+        {n.isDia===false&&<circle cx={nx} cy={ny} r={13} fill="none" stroke="#FFB5C2" strokeWidth={2} opacity={.7}/>}
+        <circle cx={nx} cy={ny} r={n.isRoot?12:10} fill={n.hex} stroke={n.isRoot?"#FFD700":"#fff"} strokeWidth={n.isRoot?3:2}/>
+        <text x={cx+(r+6)*Math.cos(a)} y={cy+(r+6)*Math.sin(a)+3} textAnchor="middle" fill="#666" fontSize={7}>{n.name}</text>
+      </g>);})}
+  </svg>);
+}
+
+function PaletteStrip({notes}){
+  const show=notes.length>36?notes.filter((_,i)=>i%Math.ceil(notes.length/36)===0):notes;
+  return(<div style={{display:"flex",borderRadius:10,overflow:"hidden",height:56}}>
+    {show.map((n,i)=>(<div key={i} style={{flex:1,background:n.hex,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+      borderRight:i<show.length-1?"1px solid rgba(255,255,255,.2)":"none",position:"relative"}}>
+      {n.isDia===false&&<div style={{position:"absolute",top:2,right:2,width:4,height:4,borderRadius:"50%",background:"#FFB5C2"}}/>}
+      {notes.length<=24&&<><span style={{fontSize:7.5,fontWeight:700,color:lumOf(n.hex)>160?"#555":"#fff",opacity:.8}}>{n.name}</span>
+      <span style={{fontSize:6,color:lumOf(n.hex)>160?"#888":"#ddd",fontFamily:"monospace"}}>{n.cents.toFixed(0)}c</span></>}
+    </div>))}
+  </div>);
+}
+
+function NColorPick({notes}){
+  const[count,setCount]=useState(3);const mx=Math.min(notes.length,8);
+  const picked=useMemo(()=>{
+    if(notes.length<count)return notes.map((_,i)=>i);
+    const hd=(a,b)=>{const d=Math.abs(notes[a].hue-notes[b].hue);return Math.min(d,360-d);};
+    if(count<=4&&notes.length<=30){
+      const idx=Array.from({length:notes.length},(_,i)=>i);
+      function combos(arr,k){if(k===0)return[[]];if(!arr.length)return[];const[f,...r]=arr;return[...combos(r,k-1).map(c=>[f,...c]),...combos(r,k)];}
+      let best=idx.slice(0,count),bm=0;
+      for(const c of combos(idx,count)){let md=Infinity;for(let i=0;i<c.length;i++)for(let j=i+1;j<c.length;j++)md=Math.min(md,hd(c[i],c[j]));if(md>bm){bm=md;best=c;}}
+      return best;}
+    const sel=[0],used=new Set([0]);
+    while(sel.length<count){let bi=-1,bd=-1;for(let i=0;i<notes.length;i++){if(used.has(i))continue;let md=Infinity;for(const s of sel){md=Math.min(md,hd(i,s));}if(md>bd){bd=md;bi=i;}}if(bi>=0){sel.push(bi);used.add(bi);}}
+    return sel.sort((a,b)=>a-b);
+  },[notes,count]);
+  const pn=picked.map(i=>notes[i]);
+  const rl=count===2?["BASE","ACCENT"]:count===3?["BASE","ACCENT","SUB"]:pn.map((_,i)=>`C${i+1}`);
+  const rt=count===2?[75,25]:count===3?[70,25,5]:pn.map((_,i)=>i===0?50:i===1?25:Math.max(2,Math.round(25/(count-2))));
+  if(notes.length<2)return null;
+  return(<div style={{marginTop:16}}>
+    <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+      <div style={{fontSize:12,fontWeight:700,color:"#1a1a2e"}}>Color Palette</div>
+      <div style={{display:"flex",gap:3}}>
+        {Array.from({length:mx-1},(_,i)=>i+2).map(n=>(<button key={n} onClick={()=>setCount(n)} style={{
+          width:26,height:26,borderRadius:8,border:"none",fontSize:11,fontWeight:700,cursor:"pointer",
+          background:count===n?"#1a1a2e":"#ededf2",color:count===n?"#fff":"#888"}}>{n}</button>))}
+      </div></div>
+    <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+      {pn.map((n,i)=>(<div key={i} style={{textAlign:"center",minWidth:50}}>
+        <div style={{width:50,height:50,borderRadius:10,background:n.hex,
+          boxShadow:n.isDia===false?`0 0 14px ${n.hex}80`:`0 2px 10px ${n.hex}30`,
+          display:"flex",alignItems:"center",justifyContent:"center",
+          border:n.isRoot?"2px solid #FFD700":"none"}}>
+          <span style={{fontSize:8,fontWeight:700,color:lumOf(n.hex)>160?"#555":"#fff"}}>{rl[i]}</span></div>
+        <div style={{fontSize:9,fontWeight:600,color:"#444",marginTop:3}}>{n.name}</div>
+        <div style={{fontSize:8,color:"#999",fontFamily:"monospace"}}>{n.hex}</div>
+        <div style={{fontSize:7,color:"#bbb",fontFamily:"monospace"}}>{(()=>{const r=hexToRgb(n.hex);return`${r.r},${r.g},${r.b}`;})()}</div>
+      </div>))}</div>
+    <div style={{display:"flex",height:8,borderRadius:4,overflow:"hidden",marginTop:8,maxWidth:280}}>
+      {pn.map((n,i)=><div key={i} style={{flex:rt[i],background:n.hex}}/>)}</div>
+    <div style={{fontSize:9,color:"#aaa",marginTop:2}}>{rt.join(" : ")}</div>
+  </div>);
+}
+
+function IntervalTable({notes}){
+  return(<div style={{overflowX:"auto",marginTop:12}}>
+    <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+      <thead><tr style={{background:"#1a1a2e"}}>
+        {["#","Name","Cents","Hue°","","HEX","RGB","Role"].map((h,i)=>(
+          <th key={i} style={{color:"#fff",padding:"6px 6px",textAlign:i>1&&i<4?"right":i===4?"center":"left",fontSize:10}}>{h}</th>))}
+      </tr></thead>
+      <tbody>{notes.map((n,i)=>(
+        <tr key={i} style={{background:n.isDia===false?"#FFF5F7":i%2===0?"#fafafa":"#fff"}}>
+          <td style={{padding:"5px 6px",color:"#888"}}>{i+1}</td>
+          <td style={{padding:"5px 6px",fontWeight:600}}>{n.name}{n.isRoot?" \u25CE":""}</td>
+          <td style={{padding:"5px 6px",textAlign:"right",fontFamily:"monospace"}}>{n.cents.toFixed(1)}</td>
+          <td style={{padding:"5px 6px",textAlign:"right",fontFamily:"monospace"}}>{n.hue.toFixed(1)}</td>
+          <td style={{padding:"5px 6px",textAlign:"center"}}>
+            <div style={{width:20,height:20,borderRadius:4,background:n.hex,margin:"0 auto",
+              border:n.isDia===false?"2px solid #FFB5C2":"1px solid #eee",
+              boxShadow:n.isRoot?"0 0 6px #FFD700":"none"}}/></td>
+          <td style={{padding:"5px 6px",fontFamily:"monospace",fontSize:10}}>{n.hex}</td>
+          <td style={{padding:"5px 6px",fontFamily:"monospace",fontSize:10}}>{(()=>{const r=hexToRgb(n.hex);return`${r.r},${r.g},${r.b}`;})()}</td>
+          <td style={{padding:"5px 6px",fontSize:9,color:"#999"}}>{n.isRoot?"Root":n.isDia===false?"Shifted":"Dia"}</td>
+        </tr>))}</tbody>
+    </table></div>);
+}
+
+const Card=({children,style})=>(<div style={{background:"#fff",borderRadius:14,padding:"14px 16px",boxShadow:"0 1px 8px rgba(0,0,0,.04)",marginBottom:14,border:"1px solid #eee",...style}}>{children}</div>);
+const Label=({children})=><div style={{fontSize:12,fontWeight:700,color:"#1a1a2e",marginBottom:8}}>{children}</div>;
+
+// ============ MAIN APP ============
+export default function MicrotonalColorApp(){
+  const[mode,setMode]=useState("library");
+  const[scaleName,setScaleName]=useState("12-EDO");
+  const[baseHue,setBaseHue]=useState(0);
+  const[saturation,setSaturation]=useState(70);
+  const[lightness,setLightness]=useState(55);
+  const[tab,setTab]=useState("wheel");
+  const[iceD,setIceD]=useState("Ionian");
+  const[iceN,setIceN]=useState(50);
+  const[ice7or12,setIce7or12]=useState(12);
+  const[customText,setCustomText]=useState("");
+  const[customName,setCustomName]=useState("Custom Scale");
+  const[customParsed,setCustomParsed]=useState(null);
+  const fileRef=useRef(null);
+
+  const effectiveScale=useMemo(()=>{
+    if(mode==="iceBuilder"){
+      if(ice7or12===7){const dia=DIATONIC_BASES[iceD];return{cents:dia.cents,names:dia.names,isDia:dia.cents.map(()=>true),desc:`I(${iceD},${iceN}) 7-tone`,iceface:true};}
+      const full=generateIcefaceScale(iceD,iceN);return{cents:full.cents,names:full.names,isDia:full.isDia,desc:`I(${iceD},${iceN}) 12-tone`,iceface:true};}
+    if(mode==="custom"&&customParsed)return{cents:customParsed.cents,names:customParsed.names,isDia:customParsed.cents.map(()=>undefined),desc:customParsed.desc};
+    const sd=SCALES[scaleName];
+    if(sd.type==="edo"){const c=Array.from({length:sd.n},(_,i)=>(i*1200)/sd.n);return{cents:c,names:c.map((_,i)=>`${i+1}`),isDia:c.map(()=>undefined),desc:sd.desc};}
+    return{cents:sd.cents,names:sd.names||sd.cents.map((_,i)=>`${i+1}`),isDia:sd.cents.map(()=>undefined),desc:sd.desc};
+  },[mode,scaleName,iceD,iceN,ice7or12,customParsed]);
+
+  const currentName=mode==="iceBuilder"?`Ice_${iceD}_N${iceN}`:mode==="custom"?customName:scaleName;
+
+  const notes=useMemo(()=>effectiveScale.cents.map((c,i)=>{
+    const hue=centsToHue(c,baseHue);const isShifted=effectiveScale.isDia?.[i]===false;const isRoot=i===0;
+    const adjSat=isShifted?Math.min(100,saturation+12):saturation;
+    const adjLight=isRoot?Math.min(90,lightness+8):isShifted?Math.max(25,lightness-5):lightness;
+    return{cents:c,hue,hex:hslToHex(hue,adjSat,adjLight),name:effectiveScale.names[i],isDia:effectiveScale.isDia?.[i],isRoot};
+  }),[effectiveScale,baseHue,saturation,lightness]);
+
+  const dl=useCallback((content,name,type)=>{const b=new Blob([content],{type});const a=document.createElement("a");a.href=URL.createObjectURL(b);a.download=name;a.click();},[]);
+  const downloadScl=()=>dl(generateScl(currentName,effectiveScale.cents),`${currentName.replace(/\s+/g,"_")}.scl`,"text/plain");
+  const downloadCSS=()=>{const ln=[`/* ${currentName} */`,`:root {`,...notes.map((n,i)=>{const r=hexToRgb(n.hex);return`  --tone-${i+1}: ${n.hex}; /* ${n.name} ${n.cents.toFixed(1)}c rgb(${r.r},${r.g},${r.b}) */`;}),`}`];dl(ln.join("\n"),`${currentName.replace(/\s+/g,"_")}.css`,"text/css");};
+  const downloadJSON=()=>{const d={name:currentName,baseHue,saturation,lightness,tones:notes.map(n=>({name:n.name,cents:n.cents,hue:n.hue,hex:n.hex,rgb:hexToRgb(n.hex),isDiatonic:n.isDia,isRoot:n.isRoot}))};dl(JSON.stringify(d,null,2),`${currentName.replace(/\s+/g,"_")}.json`,"application/json");};
+
+  const handleFile=(e)=>{const f=e.target.files?.[0];if(!f)return;const r=new FileReader();r.onload=(ev)=>{const p=parseScl(ev.target.result);if(p){setCustomParsed(p);setCustomName(p.desc||f.name.replace(".scl",""));setCustomText(ev.target.result);setMode("custom");}};r.readAsText(f);};
+  const handleParse=()=>{const p=parseCentsText(customText);if(p){setCustomParsed(p);setMode("custom");}};
+
+  const cats={"EDO":Object.keys(SCALES).filter(k=>SCALES[k].type==="edo"),"Just/Pyth":["JI Major","JI Minor","Pythagorean","Harmonic 8-16"],
+    "Modes":["Dorian","Lydian","Mixolydian","Phrygian"],"World":["Maqam Rast","Maqam Hijaz","Maqam Bayati","Slendro","Pelog"]};
+
+  return(<div style={{minHeight:"100vh",background:"#f4f4f8",fontFamily:"'Hiragino Kaku Gothic ProN','Noto Sans JP',system-ui,sans-serif",padding:"16px 12px 60px"}}>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;900&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+
+    <div style={{textAlign:"center",padding:"12px 0 16px"}}>
+      <h1 style={{fontSize:20,fontWeight:900,color:"#1a1a2e",margin:"0 0 4px"}}>Microtonal Color Palette</h1>
+      <p style={{fontSize:11,color:"#888",margin:0}}>音律から色彩パレットを生成 &middot; .scl / CSS / JSON</p></div>
+
+    {/* Mode Tabs */}
+    <div style={{display:"flex",gap:6,marginBottom:14}}>
+      {[["library","Library"],["iceBuilder","I(D,N) Builder"],["custom","Custom"]].map(([m,l])=>(
+        <button key={m} onClick={()=>setMode(m)} style={{flex:1,padding:"8px 4px",borderRadius:10,border:"none",fontSize:11,fontWeight:700,cursor:"pointer",
+          background:mode===m?(m==="iceBuilder"?"#FFB5C2":"#1a1a2e"):"#e4e4ea",color:mode===m?(m==="iceBuilder"?"#1a1a2e":"#fff"):"#666"}}>{l}</button>))}
+    </div>
+
+    {/* Library */}
+    {mode==="library"&&<Card><Label>Scale / Tuning</Label>
+      {Object.entries(cats).map(([cat,keys])=>(<div key={cat} style={{marginBottom:8}}>
+        <div style={{fontSize:10,color:"#999",marginBottom:4,fontWeight:700}}>{cat}</div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+          {keys.map(k=>(<button key={k} onClick={()=>setScaleName(k)} style={{padding:"4px 10px",borderRadius:12,border:"none",fontSize:10.5,fontWeight:600,cursor:"pointer",
+            background:scaleName===k?"#1a1a2e":"#ededf2",color:scaleName===k?"#fff":"#555"}}>{k}</button>))}</div></div>))}
+      <div style={{fontSize:11,color:"#888",marginTop:6,fontStyle:"italic"}}>{effectiveScale.desc}</div>
+    </Card>}
+
+    {/* I(D,N) Builder */}
+    {mode==="iceBuilder"&&<Card style={{background:"linear-gradient(135deg,#FFF8FA,#F4F8FF)",border:"1px solid #f0e0e4"}}>
+      <Label>I(D, N) Builder <span style={{fontSize:9,color:"#c0392b"}}>Iceface Tuning Generator</span></Label>
+
+      <div style={{marginBottom:12}}>
+        <div style={{fontSize:10,color:"#888",marginBottom:4,fontWeight:700}}>D = Diatonic Base</div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+          {Object.keys(DIATONIC_BASES).map(k=>(<button key={k} onClick={()=>setIceD(k)} style={{
+            padding:"4px 12px",borderRadius:12,border:"none",fontSize:10.5,fontWeight:600,cursor:"pointer",
+            background:iceD===k?"#FFB5C2":"#ededf2",color:iceD===k?"#1a1a2e":"#555"}}>{k}</button>))}</div></div>
+
+      <div style={{marginBottom:12}}>
+        <div style={{fontSize:10,color:"#888",marginBottom:4,fontWeight:700}}>N = {iceN} cents</div>
+        <input type="range" min={0} max={100} step={5} value={iceN} onChange={e=>setIceN(+e.target.value)} style={{width:"100%"}}/>
+        <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:"#aaa"}}><span>0</span><span>25</span><span>50</span><span>75</span><span>100</span></div></div>
+
+      <div style={{marginBottom:8}}>
+        <div style={{fontSize:10,color:"#888",marginBottom:4,fontWeight:700}}>Output</div>
+        <div style={{display:"flex",gap:4}}>
+          {[7,12].map(n=>(<button key={n} onClick={()=>setIce7or12(n)} style={{padding:"4px 14px",borderRadius:10,border:"none",fontSize:10.5,fontWeight:700,cursor:"pointer",
+            background:ice7or12===n?"#1a1a2e":"#ededf2",color:ice7or12===n?"#fff":"#666"}}>{n} tones</button>))}</div></div>
+
+      <div style={{fontSize:10,color:"#666",marginTop:8,padding:"8px 12px",background:"#fff",borderRadius:8,lineHeight:1.6}}>
+        <span style={{color:"#FFB5C2",fontWeight:700}}>●</span> shifted &nbsp;
+        <span style={{color:"#FFD700",fontWeight:700}}>◎</span> root &nbsp;
+        <span style={{fontFamily:"monospace",background:"#f0f0f5",padding:"1px 6px",borderRadius:4}}>I({iceD}, {iceN})</span>
+      </div>
+    </Card>}
+
+    {/* Custom Input */}
+    {mode==="custom"&&<Card>
+      <Label>Custom Scale Input</Label>
+      <button onClick={()=>fileRef.current?.click()} style={{padding:"8px 16px",borderRadius:10,border:"2px dashed #ccc",background:"#fafafa",fontSize:11,fontWeight:600,cursor:"pointer",color:"#666",width:"100%",marginBottom:10}}>
+        .scl ファイルを読み込む</button>
+      <input ref={fileRef} type="file" accept=".scl" onChange={handleFile} style={{display:"none"}}/>
+
+      <div style={{fontSize:10,color:"#888",marginBottom:4,fontWeight:700}}>cents 入力（カンマ / 改行 / スペース）</div>
+      <textarea value={customText} onChange={e=>setCustomText(e.target.value)} placeholder="0, 150, 200, 350, 400, 500, 650, 700, 850, 900, 1050, 1100"
+        style={{width:"100%",height:70,borderRadius:8,border:"1px solid #ddd",padding:8,fontSize:11,fontFamily:"monospace",resize:"vertical",boxSizing:"border-box"}}/>
+      <div style={{display:"flex",gap:8,marginTop:6}}>
+        <input value={customName} onChange={e=>setCustomName(e.target.value)} placeholder="Scale name"
+          style={{flex:1,padding:"6px 10px",borderRadius:8,border:"1px solid #ddd",fontSize:11}}/>
+        <button onClick={handleParse} style={{padding:"6px 16px",borderRadius:8,border:"none",background:"#1a1a2e",color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>Parse</button></div>
+      {customParsed&&<div style={{marginTop:8,fontSize:10,color:"#27ae60",fontWeight:600}}>Loaded: {customParsed.cents.length} notes</div>}
+    </Card>}
+
+    {/* Color Controls */}
+    <Card><Label>Color Mapping</Label>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
+        {[["Base Hue",baseHue,setBaseHue,0,359,"°"],["Saturation",saturation,setSaturation,10,100,"%"],["Lightness",lightness,setLightness,25,85,"%"]].map(([l,v,fn,mn,mx,u])=>(
+          <div key={l}><label style={{fontSize:10,color:"#888",display:"block",marginBottom:3}}>{l}: {v}{u}</label>
+            <input type="range" min={mn} max={mx} value={v} onChange={e=>fn(+e.target.value)} style={{width:"100%"}}/></div>))}
+      </div></Card>
+
+    {/* Palette */}
+    <Card><Label>{currentName} ({notes.length} tones)</Label>
+      <PaletteStrip notes={notes}/><NColorPick notes={notes}/></Card>
+
+    {/* Tabs */}
+    <div style={{display:"flex",gap:6,marginBottom:12}}>
+      {["wheel","table"].map(t=>(<button key={t} onClick={()=>setTab(t)} style={{padding:"6px 16px",borderRadius:12,border:"none",fontSize:12,fontWeight:700,cursor:"pointer",
+        background:tab===t?"#1a1a2e":"#e4e4ea",color:tab===t?"#fff":"#666"}}>{t==="wheel"?"Color Wheel":"Detail Table"}</button>))}</div>
+
+    {tab==="wheel"&&<Card style={{display:"flex",justifyContent:"center",padding:"20px 16px"}}><ColorWheel notes={notes} size={280} baseHue={baseHue}/></Card>}
+    {tab==="table"&&<Card style={{padding:"14px 10px"}}><IntervalTable notes={notes}/></Card>}
+
+    {/* Export */}
+    <div style={{background:"#1a1a2e",borderRadius:14,padding:14,display:"flex",gap:8,flexWrap:"wrap",justifyContent:"center",marginBottom:14}}>
+      {[{l:".scl",fn:downloadScl,bg:"#c0392b"},{l:"CSS",fn:downloadCSS,bg:"#2471a3"},{l:"JSON",fn:downloadJSON,bg:"#27ae60"}].map(b=>(
+        <button key={b.l} onClick={b.fn} style={{padding:"9px 18px",borderRadius:10,border:"none",background:b.bg,color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>Export {b.l}</button>))}</div>
+
+    {/* UI Preview */}
+    <Card><Label>UI Preview</Label>
+      <div style={{background:notes[0]?.hex||"#fff",borderRadius:10,padding:16,minHeight:80}}>
+        <div style={{background:notes.length>1?notes[Math.floor(notes.length*.58)]?.hex:"#333",borderRadius:6,padding:"6px 14px",display:"inline-block",
+          color:lumOf(notes.length>1?notes[Math.floor(notes.length*.58)]?.hex:"#333")>160?"#222":"#fff",fontSize:12,fontWeight:700,marginBottom:6}}>{currentName}</div>
+        <div style={{display:"flex",gap:6,marginTop:6}}>
+          {notes.slice(0,Math.min(notes.length,7)).map((n,i)=>(<div key={i} style={{width:30,height:30,borderRadius:6,background:n.hex,
+            border:n.isDia===false?"2px solid #FFB5C2":`1px solid ${hslToHex(n.hue,saturation,Math.min(95,lightness+20))}`,
+            boxShadow:n.isRoot?"0 0 8px #FFD700":"none"}}/>))}</div></div></Card>
+
+    <div style={{textAlign:"center",padding:"16px 0 0",fontSize:10,color:"#aaa"}}>ICEFACE Toys &middot; Microtonal Color Palette v2 &middot; 2026</div>
+  </div>);
+}
