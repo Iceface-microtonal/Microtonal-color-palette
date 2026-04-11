@@ -22,7 +22,7 @@
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script type="text/babel">
-const { useState, useMemo, useCallback, useRef } = React;
+const { useState, useMemo, useCallback, useRef, useEffect } = React;
 
 // ============ SCALE LIBRARY ============
 const SCALES = {
@@ -61,6 +61,94 @@ const DIATONIC_BASES = {
   "Locrian":    { cents: [0,100,300,500,600,800,1000], names: ["B","C","D","E","F","G","A"] },
   "Rast":       { cents: [0,200,350,500,700,900,1050], names: ["C","D","E\u00BDb","F","G","A","B\u00BDb"] },
 };
+
+// ============ AUDIO ENGINE ============
+let _audioCtx = null;
+function getAudioCtx(){ if(!_audioCtx) _audioCtx = new (window.AudioContext||window.webkitAudioContext)(); if(_audioCtx.state==="suspended") _audioCtx.resume(); return _audioCtx; }
+function playTone(cents, baseFreq=261.63, waveform="sine", duration=0.6, gain=0.18){
+  const ctx=getAudioCtx(); const t=ctx.currentTime;
+  const freq=baseFreq*Math.pow(2,cents/1200);
+  const osc=ctx.createOscillator(); const g=ctx.createGain();
+  osc.type=waveform; osc.frequency.value=freq;
+  g.gain.setValueAtTime(0,t);
+  g.gain.linearRampToValueAtTime(gain,t+0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001,t+duration);
+  osc.connect(g); g.connect(ctx.destination);
+  osc.start(t); osc.stop(t+duration+0.02);
+}
+function playScale(centsArr, baseFreq, waveform, stepDur=0.28, gain=0.18){
+  const ctx=getAudioCtx(); const start=ctx.currentTime;
+  centsArr.forEach((c,i)=>{
+    const freq=baseFreq*Math.pow(2,c/1200);
+    const osc=ctx.createOscillator(); const g=ctx.createGain();
+    const t=start+i*stepDur;
+    osc.type=waveform; osc.frequency.value=freq;
+    g.gain.setValueAtTime(0,t);
+    g.gain.linearRampToValueAtTime(gain,t+0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001,t+stepDur*1.1);
+    osc.connect(g); g.connect(ctx.destination);
+    osc.start(t); osc.stop(t+stepDur*1.15);
+  });
+}
+function playChord(centsArr, baseFreq, waveform, duration=1.8, gain=0.14){
+  const ctx=getAudioCtx(); const t=ctx.currentTime;
+  const perGain=gain/Math.sqrt(Math.max(1,centsArr.length));
+  centsArr.forEach(c=>{
+    const freq=baseFreq*Math.pow(2,c/1200);
+    const osc=ctx.createOscillator(); const g=ctx.createGain();
+    osc.type=waveform; osc.frequency.value=freq;
+    g.gain.setValueAtTime(0,t);
+    g.gain.linearRampToValueAtTime(perGain,t+0.03);
+    g.gain.linearRampToValueAtTime(perGain,t+duration*0.75);
+    g.gain.exponentialRampToValueAtTime(0.0001,t+duration);
+    osc.connect(g); g.connect(ctx.destination);
+    osc.start(t); osc.stop(t+duration+0.05);
+  });
+}
+function startDrone(cents, baseFreq, waveform, gain=0.07){
+  const ctx=getAudioCtx(); const t=ctx.currentTime;
+  const freq=baseFreq*Math.pow(2,cents/1200);
+  const osc=ctx.createOscillator(); const g=ctx.createGain();
+  osc.type=waveform; osc.frequency.value=freq;
+  g.gain.setValueAtTime(0,t);
+  g.gain.linearRampToValueAtTime(gain,t+0.25);
+  osc.connect(g); g.connect(ctx.destination);
+  osc.start(t);
+  return {osc,g,ctx};
+}
+function stopDrone(ref){
+  if(!ref) return;
+  try{
+    const t=ref.ctx.currentTime;
+    ref.g.gain.cancelScheduledValues(t);
+    ref.g.gain.setValueAtTime(ref.g.gain.value,t);
+    ref.g.gain.linearRampToValueAtTime(0.0001,t+0.2);
+    ref.osc.stop(t+0.25);
+  }catch(e){}
+}
+
+// ============ MATH HELPERS ============
+function bestRatio(cents, maxDenom=16){
+  if(cents===0) return {n:1,d:1,err:0};
+  const mod=((cents%1200)+1200)%1200;
+  const target=Math.pow(2,mod/1200);
+  let best={n:1,d:1,err:Infinity};
+  for(let d=1;d<=maxDenom;d++){
+    for(let n=d;n<=2*d;n++){
+      const err=Math.abs(1200*Math.log2((n/d)/target));
+      if(err<best.err-0.001) best={n,d,err};
+    }
+  }
+  return best;
+}
+function midiInfo(freq){
+  const m=69+12*Math.log2(freq/440);
+  const nearest=Math.round(m);
+  const cents=Math.round((m-nearest)*100);
+  const names=["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+  const name=names[((nearest%12)+12)%12]+(Math.floor(nearest/12)-1);
+  return {midi:m.toFixed(2),name,cents};
+}
 
 // ============ COLOR MATH ============
 function hslToHex(h,s,l) {
@@ -103,7 +191,7 @@ function generateScl(name,cents){
   return[`! ${name.replace(/\s+/g,"_")}.scl`,`!`,name,`${cents.length-1}`,`!`,...cents.slice(1).map(c=>` ${c.toFixed(6)}`),` 1200.000000`].join("\n");}
 
 // ============ COMPONENTS ============
-function ColorWheel({notes,size=260,baseHue}){
+function ColorWheel({notes,size=260,baseHue,onPlay,playingIdx}){
   const cx=size/2,cy=size/2,r=size/2-30,ri=size/2-70;
   return(<svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
     {Array.from({length:72},(_,i)=>{const deg=i*5,a1=(deg-2.5)*Math.PI/180,a2=(deg+2.5)*Math.PI/180,ro=size/2-8;
@@ -113,19 +201,22 @@ function ColorWheel({notes,size=260,baseHue}){
     <text x={cx} y={cy-2} textAnchor="middle" fill="#888" fontSize={11}>{notes.length} tones</text>
     <text x={cx} y={cy+12} textAnchor="middle" fill="#555" fontSize={9}>base:{baseHue}°</text>
     {notes.map((n,i)=>{const a=(n.hue-90)*Math.PI/180,nx=cx+(r-18)*Math.cos(a),ny=cy+(r-18)*Math.sin(a);
-      return(<g key={i}>
+      const isPlaying=playingIdx===i;
+      return(<g key={i} onClick={()=>onPlay&&onPlay(i)} style={{cursor:"pointer"}}>
         {n.isDia===false&&<circle cx={nx} cy={ny} r={13} fill="none" stroke="#FFB5C2" strokeWidth={2} opacity={.7}/>}
-        <circle cx={nx} cy={ny} r={n.isRoot?12:10} fill={n.hex} stroke={n.isRoot?"#FFD700":"#fff"} strokeWidth={n.isRoot?3:2}/>
+        {isPlaying&&<circle cx={nx} cy={ny} r={16} fill="none" stroke="#FFD700" strokeWidth={3} opacity={.9}/>}
+        <circle cx={nx} cy={ny} r={isPlaying?13:(n.isRoot?12:10)} fill={n.hex} stroke={n.isRoot?"#FFD700":"#fff"} strokeWidth={n.isRoot?3:2}/>
         <text x={cx+(r+6)*Math.cos(a)} y={cy+(r+6)*Math.sin(a)+3} textAnchor="middle" fill="#666" fontSize={7}>{n.name}</text>
       </g>);})}
   </svg>);
 }
 
-function PaletteStrip({notes}){
-  const show=notes.length>36?notes.filter((_,i)=>i%Math.ceil(notes.length/36)===0):notes;
+function PaletteStrip({notes,onPlay,playingIdx}){
+  const filtered=notes.length>36?notes.map((n,i)=>({n,i})).filter((_,i)=>i%Math.ceil(notes.length/36)===0):notes.map((n,i)=>({n,i}));
   return(<div style={{display:"flex",borderRadius:10,overflow:"hidden",height:56}}>
-    {show.map((n,i)=>(<div key={i} style={{flex:1,background:n.hex,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
-      borderRight:i<show.length-1?"1px solid rgba(255,255,255,.2)":"none",position:"relative"}}>
+    {filtered.map(({n,i},k)=>(<div key={k} onClick={()=>onPlay&&onPlay(i)} style={{flex:1,background:n.hex,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+      borderRight:k<filtered.length-1?"1px solid rgba(255,255,255,.2)":"none",position:"relative",cursor:"pointer",
+      transform:playingIdx===i?"scale(1.08)":"scale(1)",transition:"transform .12s",boxShadow:playingIdx===i?"inset 0 0 0 3px #FFD700":"none"}}>
       {n.isDia===false&&<div style={{position:"absolute",top:2,right:2,width:4,height:4,borderRadius:"50%",background:"#FFB5C2"}}/>}
       {notes.length<=24&&<><span style={{fontSize:7.5,fontWeight:700,color:lumOf(n.hex)>160?"#555":"#fff",opacity:.8}}>{n.name}</span>
       <span style={{fontSize:6,color:lumOf(n.hex)>160?"#888":"#ddd",fontFamily:"monospace"}}>{n.cents.toFixed(0)}c</span></>}
@@ -133,7 +224,7 @@ function PaletteStrip({notes}){
   </div>);
 }
 
-function NColorPick({notes}){
+function NColorPick({notes,onPlayChord,onPlayNote}){
   const[count,setCount]=useState(3);const mx=Math.min(notes.length,8);
   const picked=useMemo(()=>{
     if(notes.length<count)return notes.map((_,i)=>i);
@@ -153,13 +244,18 @@ function NColorPick({notes}){
   const rt=count===2?[75,25]:count===3?[70,25,5]:pn.map((_,i)=>i===0?50:i===1?25:Math.max(2,Math.round(25/(count-2))));
   if(notes.length<2)return null;
   return(<div style={{marginTop:16}}>
-    <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+    <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap"}}>
       <div style={{fontSize:12,fontWeight:700,color:"#1a1a2e"}}>Color Palette</div>
       <div style={{display:"flex",gap:3}}>
         {Array.from({length:mx-1},(_,i)=>i+2).map(n=>(<button key={n} onClick={()=>setCount(n)} style={{
           width:26,height:26,borderRadius:8,border:"none",fontSize:11,fontWeight:700,cursor:"pointer",
           background:count===n?"#1a1a2e":"#ededf2",color:count===n?"#fff":"#888"}}>{n}</button>))}
-      </div></div>
+      </div>
+      {onPlayChord&&<button onClick={()=>onPlayChord(pn.map(n=>n.cents))} style={{
+        marginLeft:"auto",padding:"4px 12px",borderRadius:8,border:"none",background:"#27ae60",color:"#fff",fontSize:10,fontWeight:700,cursor:"pointer"}}>♫ Chord</button>}
+      {onPlayChord&&<button onClick={()=>{const cs=pn.map(n=>n.cents);cs.forEach((c,i)=>setTimeout(()=>onPlayNote&&onPlayNote(c,notes.indexOf(pn[i])),i*220));}} style={{
+        padding:"4px 12px",borderRadius:8,border:"none",background:"#2471a3",color:"#fff",fontSize:10,fontWeight:700,cursor:"pointer"}}>♪ Arp</button>}
+    </div>
     <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
       {pn.map((n,i)=>(<div key={i} style={{textAlign:"center",minWidth:50}}>
         <div style={{width:50,height:50,borderRadius:10,background:n.hex,
@@ -177,15 +273,20 @@ function NColorPick({notes}){
   </div>);
 }
 
-function IntervalTable({notes}){
+function IntervalTable({notes,onPlay,playingIdx,baseFreq=261.63}){
   return(<div style={{overflowX:"auto",marginTop:12}}>
     <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
       <thead><tr style={{background:"#1a1a2e"}}>
-        {["#","Name","Cents","Hue°","","HEX","RGB","Role"].map((h,i)=>(
-          <th key={i} style={{color:"#fff",padding:"6px 6px",textAlign:i>1&&i<4?"right":i===4?"center":"left",fontSize:10}}>{h}</th>))}
+        {["▶","#","Name","Cents","Hue°","","HEX","JI≈","Hz","MIDI","Role"].map((h,i)=>(
+          <th key={i} style={{color:"#fff",padding:"6px 6px",textAlign:i>2&&i<5?"right":i===5?"center":"left",fontSize:10}}>{h}</th>))}
       </tr></thead>
-      <tbody>{notes.map((n,i)=>(
-        <tr key={i} style={{background:n.isDia===false?"#FFF5F7":i%2===0?"#fafafa":"#fff"}}>
+      <tbody>{notes.map((n,i)=>{
+        const ji=bestRatio(n.cents,16);
+        const freq=baseFreq*Math.pow(2,n.cents/1200);
+        const mi=midiInfo(freq);
+        return(
+        <tr key={i} onClick={()=>onPlay&&onPlay(i)} style={{background:playingIdx===i?"#FFF8DC":n.isDia===false?"#FFF5F7":i%2===0?"#fafafa":"#fff",cursor:"pointer"}}>
+          <td style={{padding:"5px 6px",fontSize:11,color:playingIdx===i?"#FFD700":"#27ae60"}}>▶</td>
           <td style={{padding:"5px 6px",color:"#888"}}>{i+1}</td>
           <td style={{padding:"5px 6px",fontWeight:600}}>{n.name}{n.isRoot?" \u25CE":""}</td>
           <td style={{padding:"5px 6px",textAlign:"right",fontFamily:"monospace"}}>{n.cents.toFixed(1)}</td>
@@ -195,9 +296,11 @@ function IntervalTable({notes}){
               border:n.isDia===false?"2px solid #FFB5C2":"1px solid #eee",
               boxShadow:n.isRoot?"0 0 6px #FFD700":"none"}}/></td>
           <td style={{padding:"5px 6px",fontFamily:"monospace",fontSize:10}}>{n.hex}</td>
-          <td style={{padding:"5px 6px",fontFamily:"monospace",fontSize:10}}>{(()=>{const r=hexToRgb(n.hex);return`${r.r},${r.g},${r.b}`;})()}</td>
+          <td style={{padding:"5px 6px",fontFamily:"monospace",fontSize:10,color:Math.abs(ji.err)<5?"#27ae60":Math.abs(ji.err)<15?"#888":"#c0392b"}} title={`${ji.err.toFixed(1)}¢ error`}>{ji.n}/{ji.d}</td>
+          <td style={{padding:"5px 6px",fontFamily:"monospace",fontSize:10,textAlign:"right"}}>{freq.toFixed(1)}</td>
+          <td style={{padding:"5px 6px",fontFamily:"monospace",fontSize:10}}>{mi.name}{mi.cents>=0?"+":""}{mi.cents}</td>
           <td style={{padding:"5px 6px",fontSize:9,color:"#999"}}>{n.isRoot?"Root":n.isDia===false?"Shifted":"Dia"}</td>
-        </tr>))}</tbody>
+        </tr>);})}</tbody>
     </table></div>);
 }
 
@@ -219,6 +322,56 @@ function MicrotonalColorApp(){
   const[customName,setCustomName]=useState("Custom Scale");
   const[customParsed,setCustomParsed]=useState(null);
   const fileRef=useRef(null);
+  const[baseFreq,setBaseFreq]=useState(261.63);
+  const[waveform,setWaveform]=useState("triangle");
+  const[noteDur,setNoteDur]=useState(0.6);
+  const[playingIdx,setPlayingIdx]=useState(-1);
+  const[droneActive,setDroneActive]=useState(false);
+  const[keyboardActive,setKeyboardActive]=useState(false);
+  const[showJI,setShowJI]=useState(true);
+  const playTimerRef=useRef(null);
+  const droneRef=useRef(null);
+  const hashReadyRef=useRef(false);
+  const playNote=useCallback((cents,idx)=>{
+    playTone(cents,baseFreq,waveform,noteDur);
+    setPlayingIdx(idx); clearTimeout(playTimerRef.current);
+    playTimerRef.current=setTimeout(()=>setPlayingIdx(-1),noteDur*1000);
+  },[baseFreq,waveform,noteDur]);
+  const playAll=useCallback((centsArr)=>{
+    const stepDur=Math.max(0.18,Math.min(0.4,noteDur*0.55));
+    playScale(centsArr,baseFreq,waveform,stepDur);
+    centsArr.forEach((_,i)=>{ setTimeout(()=>setPlayingIdx(i),i*stepDur*1000); });
+    setTimeout(()=>setPlayingIdx(-1),centsArr.length*stepDur*1000+200);
+  },[baseFreq,waveform,noteDur]);
+  const playChordFn=useCallback((centsArr)=>{
+    playChord(centsArr,baseFreq,waveform,Math.max(1.2,noteDur*2));
+  },[baseFreq,waveform,noteDur]);
+
+  // URL hash restore on mount
+  useEffect(()=>{
+    const hash=location.hash.slice(1); hashReadyRef.current=true;
+    if(!hash) return;
+    try{
+      const p=new URLSearchParams(hash);
+      if(p.get("m")) setMode(p.get("m"));
+      if(p.get("s")) setScaleName(p.get("s"));
+      if(p.get("D")) setIceD(p.get("D"));
+      if(p.get("N")!==null) setIceN(+p.get("N"));
+      if(p.get("o")) setIce7or12(+p.get("o"));
+      if(p.get("h")!==null) setBaseHue(+p.get("h"));
+      if(p.get("S")!==null) setSaturation(+p.get("S"));
+      if(p.get("l")!==null) setLightness(+p.get("l"));
+      if(p.get("f")) setBaseFreq(+p.get("f"));
+      if(p.get("w")) setWaveform(p.get("w"));
+      if(p.get("d")) setNoteDur(+p.get("d"));
+    }catch(e){}
+  },[]);
+  // URL hash serialize
+  useEffect(()=>{
+    if(!hashReadyRef.current) return;
+    const st={m:mode,s:scaleName,D:iceD,N:iceN,o:ice7or12,h:baseHue,S:saturation,l:lightness,f:baseFreq.toFixed(2),w:waveform,d:noteDur.toFixed(2)};
+    history.replaceState(null,"","#"+new URLSearchParams(st).toString());
+  },[mode,scaleName,iceD,iceN,ice7or12,baseHue,saturation,lightness,baseFreq,waveform,noteDur]);
 
   const effectiveScale=useMemo(()=>{
     if(mode==="iceBuilder"){
@@ -231,6 +384,35 @@ function MicrotonalColorApp(){
   },[mode,scaleName,iceD,iceN,ice7or12,customParsed]);
 
   const currentName=mode==="iceBuilder"?`Ice_${iceD}_N${iceN}`:mode==="custom"?customName:scaleName;
+
+  // Drone management
+  useEffect(()=>{
+    if(droneRef.current){ stopDrone(droneRef.current); droneRef.current=null; }
+    if(droneActive && effectiveScale.cents.length>0){
+      droneRef.current=startDrone(effectiveScale.cents[0],baseFreq,waveform);
+    }
+    return ()=>{ if(droneRef.current){ stopDrone(droneRef.current); droneRef.current=null; } };
+  },[droneActive,baseFreq,waveform,effectiveScale]);
+
+  // QWERTY keyboard play
+  const KEY_MAP="asdfghjkl;'qwertyuiop[]1234567890-=".split("");
+  useEffect(()=>{
+    if(!keyboardActive) return;
+    const handler=(e)=>{
+      if(e.repeat||e.metaKey||e.ctrlKey||e.altKey) return;
+      const tag=e.target&&e.target.tagName; if(tag==="INPUT"||tag==="TEXTAREA") return;
+      const idx=KEY_MAP.indexOf(e.key);
+      if(idx>=0 && idx<effectiveScale.cents.length){
+        e.preventDefault();
+        const cents=effectiveScale.cents[idx];
+        playTone(cents,baseFreq,waveform,noteDur);
+        setPlayingIdx(idx); clearTimeout(playTimerRef.current);
+        playTimerRef.current=setTimeout(()=>setPlayingIdx(-1),noteDur*1000);
+      }
+    };
+    window.addEventListener("keydown",handler);
+    return()=>window.removeEventListener("keydown",handler);
+  },[keyboardActive,effectiveScale,baseFreq,waveform,noteDur]);
 
   const notes=useMemo(()=>effectiveScale.cents.map((c,i)=>{
     const hue=centsToHue(c,baseHue);const isShifted=effectiveScale.isDia?.[i]===false;const isRoot=i===0;
@@ -328,17 +510,55 @@ function MicrotonalColorApp(){
             <input type="range" min={mn} max={mx} value={v} onChange={e=>fn(+e.target.value)} style={{width:"100%"}}/></div>))}
       </div></Card>
 
+    {/* Audio Controls */}
+    <Card><Label>Audio <span style={{fontSize:9,color:"#888",fontWeight:400}}>&middot; クリックで音を鳴らす</span></Label>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:10}}>
+        <div><label style={{fontSize:10,color:"#888",display:"block",marginBottom:3}}>Base Freq: {baseFreq.toFixed(2)} Hz</label>
+          <input type="range" min={110} max={880} step={0.01} value={baseFreq} onChange={e=>setBaseFreq(+e.target.value)} style={{width:"100%"}}/>
+          <div style={{display:"flex",gap:3,marginTop:4}}>
+            {[["A3",220],["C4",261.63],["A4",440],["C5",523.25]].map(([l,f])=>(
+              <button key={l} onClick={()=>setBaseFreq(f)} style={{flex:1,padding:"3px 0",borderRadius:6,border:"none",fontSize:9,fontWeight:700,cursor:"pointer",
+                background:Math.abs(baseFreq-f)<0.1?"#1a1a2e":"#ededf2",color:Math.abs(baseFreq-f)<0.1?"#fff":"#666"}}>{l}</button>))}
+          </div></div>
+        <div><label style={{fontSize:10,color:"#888",display:"block",marginBottom:3}}>Duration: {noteDur.toFixed(2)}s</label>
+          <input type="range" min={0.15} max={2} step={0.05} value={noteDur} onChange={e=>setNoteDur(+e.target.value)} style={{width:"100%"}}/>
+          <div style={{display:"flex",gap:3,marginTop:4}}>
+            {["sine","triangle","square","sawtooth"].map(w=>(
+              <button key={w} onClick={()=>setWaveform(w)} style={{flex:1,padding:"3px 0",borderRadius:6,border:"none",fontSize:9,fontWeight:700,cursor:"pointer",
+                background:waveform===w?"#1a1a2e":"#ededf2",color:waveform===w?"#fff":"#666"}}>{w.slice(0,3)}</button>))}
+          </div></div>
+      </div>
+      <div style={{display:"flex",gap:6,marginBottom:6}}>
+        <button onClick={()=>playAll(effectiveScale.cents)} style={{flex:1,padding:"9px 12px",borderRadius:10,border:"none",background:"#27ae60",color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>▶ Play Scale (up)</button>
+        <button onClick={()=>playAll([...effectiveScale.cents].slice().reverse())} style={{flex:1,padding:"9px 12px",borderRadius:10,border:"none",background:"#2471a3",color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>◀ Play (down)</button>
+        <button onClick={()=>playAll([...effectiveScale.cents,effectiveScale.cents[0]+1200])} style={{flex:1,padding:"9px 12px",borderRadius:10,border:"none",background:"#8e44ad",color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>▶ + Octave</button>
+      </div>
+      <div style={{display:"flex",gap:6}}>
+        <button onClick={()=>setDroneActive(a=>!a)} style={{flex:1,padding:"8px 12px",borderRadius:10,border:"none",background:droneActive?"#c0392b":"#ededf2",color:droneActive?"#fff":"#666",fontSize:11,fontWeight:700,cursor:"pointer"}}>
+          {droneActive?"■ Drone ON (root)":"○ Drone: OFF"}
+        </button>
+        <button onClick={()=>setKeyboardActive(a=>!a)} style={{flex:1,padding:"8px 12px",borderRadius:10,border:"none",background:keyboardActive?"#f39c12":"#ededf2",color:keyboardActive?"#fff":"#666",fontSize:11,fontWeight:700,cursor:"pointer"}}>
+          {keyboardActive?"⌨ Keys: ON (asdf...)":"⌨ Keys: OFF"}
+        </button>
+        <button onClick={()=>{navigator.clipboard?.writeText(location.href);}} style={{flex:1,padding:"8px 12px",borderRadius:10,border:"none",background:"#34495e",color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>🔗 Copy URL</button>
+      </div>
+      {keyboardActive&&<div style={{fontSize:9,color:"#888",marginTop:6,fontFamily:"monospace",lineHeight:1.4}}>
+        row1: <b>a s d f g h j k l ; '</b> (1-11) &nbsp; row2: <b>q w e r t y u i o p [ ]</b> (12-23) &nbsp; row3: <b>1-0 - =</b> (24-35)
+      </div>}
+    </Card>
+
     {/* Palette */}
     <Card><Label>{currentName} ({notes.length} tones)</Label>
-      <PaletteStrip notes={notes}/><NColorPick notes={notes}/></Card>
+      <PaletteStrip notes={notes} onPlay={(i)=>playNote(notes[i].cents,i)} playingIdx={playingIdx}/>
+      <NColorPick notes={notes} onPlayChord={playChordFn} onPlayNote={(c,i)=>playNote(c,i)}/></Card>
 
     {/* Tabs */}
     <div style={{display:"flex",gap:6,marginBottom:12}}>
       {["wheel","table"].map(t=>(<button key={t} onClick={()=>setTab(t)} style={{padding:"6px 16px",borderRadius:12,border:"none",fontSize:12,fontWeight:700,cursor:"pointer",
         background:tab===t?"#1a1a2e":"#e4e4ea",color:tab===t?"#fff":"#666"}}>{t==="wheel"?"Color Wheel":"Detail Table"}</button>))}</div>
 
-    {tab==="wheel"&&<Card style={{display:"flex",justifyContent:"center",padding:"20px 16px"}}><ColorWheel notes={notes} size={280} baseHue={baseHue}/></Card>}
-    {tab==="table"&&<Card style={{padding:"14px 10px"}}><IntervalTable notes={notes}/></Card>}
+    {tab==="wheel"&&<Card style={{display:"flex",justifyContent:"center",padding:"20px 16px"}}><ColorWheel notes={notes} size={280} baseHue={baseHue} onPlay={(i)=>playNote(notes[i].cents,i)} playingIdx={playingIdx}/></Card>}
+    {tab==="table"&&<Card style={{padding:"14px 10px"}}><IntervalTable notes={notes} onPlay={(i)=>playNote(notes[i].cents,i)} playingIdx={playingIdx} baseFreq={baseFreq}/></Card>}
 
     {/* Export */}
     <div style={{background:"#1a1a2e",borderRadius:14,padding:14,display:"flex",gap:8,flexWrap:"wrap",justifyContent:"center",marginBottom:14}}>
